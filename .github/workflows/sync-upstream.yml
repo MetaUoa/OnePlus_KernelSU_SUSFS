@@ -168,17 +168,34 @@ jobs:
               --comment "The latest automatic sync completed successfully, so this notification is now resolved."
           fi
 
-      - name: Start optional ReSukiSU build
-        if: ${{ success() && github.event_name == 'workflow_dispatch' && inputs.run_build }}
+      - name: Start ReSukiSU build after sync
+        if: >-
+          ${{
+            success() &&
+            (
+              (github.event_name == 'schedule' && steps.sync.outputs.updated == 'true') ||
+              (github.event_name == 'workflow_dispatch' && inputs.run_build)
+            )
+          }}
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            build_target="A16"
+            make_release="false"
+            trigger_reason="scheduled upstream update"
+          else
+            build_target="${{ inputs.build_target }}"
+            make_release="${{ inputs.make_release }}"
+            trigger_reason="manual sync request"
+          fi
+
           gh workflow run build-kernel-release.yml \
             --repo "$GITHUB_REPOSITORY" \
             --ref main \
-            --field op_model='${{ inputs.build_target }}' \
+            --field op_model="$build_target" \
             --field ksu_options='[{"type":"rsu","hash":"main"}]' \
-            --field make_release='${{ inputs.make_release }}'
+            --field make_release="$make_release"
 
-          echo "ReSukiSU build workflow dispatched."
+          echo "ReSukiSU build workflow dispatched for $build_target ($trigger_reason)."
