@@ -109,6 +109,7 @@ jobs:
 
       - name: Report automatic sync failure
         if: ${{ failure() }}
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -145,6 +146,7 @@ jobs:
 
       - name: Close resolved sync notification
         if: ${{ success() }}
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
