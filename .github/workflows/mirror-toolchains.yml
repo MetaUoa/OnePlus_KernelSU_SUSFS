@@ -22,7 +22,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Check if the release already exists
+          # Forks inherit Git tags, but not GitHub Releases. Check both independently.
           TARGET_REPO="${{ github.repository }}"
           TAG_NAME="toolchain-cache"
           
@@ -30,15 +30,18 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           
           if ! git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
-            echo "Tag not found. Creating backdated tag and release..."
-            
+            echo "Tag not found. Creating backdated tag..."
             GIT_COMMITTER_DATE="2015-01-01T12:00:00" git tag -a "$TAG_NAME" -m "Internal Toolchains Cache"
             git push origin "$TAG_NAME"
-            
+          else
+            echo "Tag '$TAG_NAME' already exists."
+          fi
+
+          if ! gh release view "$TAG_NAME" --repo "$TARGET_REPO" >/dev/null 2>&1; then
             echo "Release not found. Creating..."
             gh release create "$TAG_NAME" --title "Toolchains Mirror Cache" --notes "Deduplicated Toolchains for Kernel Build" --repo "$TARGET_REPO"
           else
-            echo "Release 'toolchain-cache' already exists. Skipping creation."
+            echo "Release '$TAG_NAME' already exists. Skipping creation."
           fi
 
   generate-mirror-matrix:
