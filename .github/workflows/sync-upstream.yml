@@ -183,10 +183,12 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "schedule" ]; then
             build_target="A16"
+            device_model="OP13"
             make_release="false"
             trigger_reason="scheduled upstream update"
           else
             build_target="${{ inputs.build_target }}"
+            device_model="all"
             make_release="${{ inputs.make_release }}"
             trigger_reason="manual sync request"
           fi
@@ -195,7 +197,8 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --ref main \
             --field op_model="$build_target" \
+            --field device_model="$device_model" \
             --field ksu_options='[{"type":"rsu","hash":"main"}]' \
             --field make_release="$make_release"
 
-          echo "ReSukiSU build workflow dispatched for $build_target ($trigger_reason)."
+          echo "ReSukiSU build workflow dispatched for $build_target/$device_model ($trigger_reason)."
