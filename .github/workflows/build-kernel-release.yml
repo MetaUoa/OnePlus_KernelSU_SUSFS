@@ -29,11 +29,6 @@ on:
           - android13-5.15
           - android12-5.10
         default: A14+15+16
-      device_model:
-        description: 'Build one exact config model (for example OP13-PJZ, OP13-CPH, or OP13). Use all for the full selected group.'
-        required: true
-        type: string
-        default: 'all'
       ksu_options:
         description: 'Enter KernelSU build JSON (types: KSUN, KSU, RSU)'
         required: true
@@ -118,7 +113,6 @@ jobs:
           echo "::group::Matrix generation"
           
           input="${{ github.event.inputs.op_model }}"
-          device_model="${{ github.event.inputs.device_model }}"
           ksu_options_raw='${{ github.event.inputs.ksu_options }}'
           if ! ksu_options_normalized=$(echo "$ksu_options_raw" | jq -c '
             if type != "array" or length == 0 then error("Expected a non-empty array") else . end |
@@ -185,14 +179,6 @@ jobs:
           esac
           
           filtered=$(jq -c "$jq_filter" matrix.json)
-
-          # Keep the upstream group selector intact, then optionally narrow the
-          # generated matrix to one exact config model.
-          if [ -n "$device_model" ] && [ "$device_model" != "all" ]; then
-            filtered=$(jq -c --arg model "$device_model" 'map(select(.model == $model))' <<< "$filtered")
-            echo "ℹ️  Device filter applied: $device_model"
-          fi
-
           count=$(jq 'length' <<<"$filtered")
           
           filtered=$(echo "$filtered" | jq '
@@ -203,7 +189,7 @@ jobs:
           ')
           
           if [ "$count" -eq 0 ]; then
-            echo "::error::No config files found for group '$input' and device '$device_model' after applying filters!"
+            echo "::error::No config files found for input '$input' after applying filters!"
             echo ""
             echo "Available configurations:"
             jq -r '.[] | "  - \(.model) (\(.os_version), \(.android_version)-\(.kernel_version))"' matrix.json
