@@ -101,7 +101,9 @@ Run **Build and Release OnePlus Kernels** from GitHub Actions and set `ksu_optio
 
 ### One-click upstream sync and upload
 
-The recommended method is the repository's **Actions → Sync Upstream → Run workflow** button. It merges `WildKernels/main` into the fork and uploads the result without rewriting history. Enable **Run a ReSukiSU kernel build after syncing** to optionally start a build after the update.
+The repository automatically checks `WildKernels/main` every six hours and uploads new commits to the fork without rewriting history. No action is needed when the merge is clean. If a real merge conflict occurs, the workflow leaves `main` unchanged and creates or updates an issue named **Automated upstream sync needs attention**.
+
+For an immediate update, use **Actions → Sync Upstream → Run workflow**. Enable **Run a ReSukiSU kernel build after syncing** to optionally start a build after the update. Scheduled syncs update source only and do not start large kernel builds.
 
 On Windows, double-click `Sync-Upstream.cmd` in the repository root for the same merge-and-upload flow. The script verifies that the worktree is clean and that `origin` points to a personal fork before pushing.
 

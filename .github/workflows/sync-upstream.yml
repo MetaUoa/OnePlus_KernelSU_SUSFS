@@ -1,6 +1,9 @@
 name: Sync Upstream
 
 on:
+  schedule:
+    - cron: '23 */6 * * *'
+      timezone: 'Asia/Shanghai'
   workflow_dispatch:
     inputs:
       run_build:
@@ -34,6 +37,7 @@ on:
 permissions:
   contents: write
   actions: write
+  issues: write
 
 concurrency:
   group: sync-upstream-main
@@ -103,8 +107,67 @@ jobs:
             echo "- After: \`${{ steps.sync.outputs.after || 'unknown' }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Report automatic sync failure
+        if: ${{ failure() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          title='Automated upstream sync needs attention'
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          upstream_sha=$(git rev-parse upstream/main 2>/dev/null || echo unknown)
+          existing=$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --search "in:title $title" \
+            --json number,title \
+            --jq ".[] | select(.title == \"$title\") | .number" \
+            | head -n1)
+
+          body=$(cat <<EOF
+          The scheduled upstream sync stopped and did not change \`main\`.
+
+          - Workflow run: $run_url
+          - Upstream commit: \`$upstream_sha\`
+          - Re-run locally: \`Sync-Upstream.cmd\`
+
+          This normally means the upstream workflow files overlap with the ReSukiSU compatibility changes.
+          EOF
+          )
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi
+
+      - name: Close resolved sync notification
+        if: ${{ success() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          title='Automated upstream sync needs attention'
+          existing=$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --search "in:title $title" \
+            --json number,title \
+            --jq ".[] | select(.title == \"$title\") | .number" \
+            | head -n1)
+
+          if [ -n "$existing" ]; then
+            gh issue close "$existing" \
+              --repo "$GITHUB_REPOSITORY" \
+              --comment "The latest automatic sync completed successfully, so this notification is now resolved."
+          fi
+
       - name: Start optional ReSukiSU build
-        if: ${{ success() && inputs.run_build }}
+        if: ${{ success() && github.event_name == 'workflow_dispatch' && inputs.run_build }}
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
