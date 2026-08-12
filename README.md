@@ -99,16 +99,21 @@ Run **Build and Release OnePlus Kernels** from GitHub Actions and set `ksu_optio
 
 `hash` accepts a ReSukiSU branch, tag, or full commit SHA. The workflow resolves it to an immutable commit before building, so `main` follows new ReSukiSU changes while a SHA gives a reproducible build. ReSukiSU's KSU-side SUSFS integration is retained; this project continues to apply the kernel-side SUSFS and OnePlus feature patches.
 
-To keep a fork current with this project's new features, keep the compatibility change as a small commit on top of upstream and regularly rebase it:
+### One-click upstream sync and upload
+
+The recommended method is the repository's **Actions → Sync Upstream → Run workflow** button. It merges `WildKernels/main` into the fork and uploads the result without rewriting history. Enable **Run a ReSukiSU kernel build after syncing** to optionally start a build after the update.
+
+On Windows, double-click `Sync-Upstream.cmd` in the repository root for the same merge-and-upload flow. The script verifies that the worktree is clean and that `origin` points to a personal fork before pushing.
+
+Manual fallback:
 
 ```bash
-git remote add upstream https://github.com/WildKernels/OnePlus_KernelSU_SUSFS.git
 git fetch upstream
-git rebase upstream/main
-git push --force-with-lease origin main
+git merge upstream/main
+git push origin main
 ```
 
-Resolve conflicts only in `.github/actions/build-kernel/action.yml`, `.github/workflows/build-kernel-release.yml`, and this documentation; device configs and manifests remain upstream-owned.
+If an automatic merge reports conflicts, run the Windows script or the manual commands locally, resolve the reported files, commit, and push. Device configs and manifests remain upstream-owned.
 
 For GKI installation, please follow the official guide:
 

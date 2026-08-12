@@ -1,0 +1,119 @@
+name: Sync Upstream
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_build:
+        description: 'Run a ReSukiSU kernel build after syncing'
+        required: true
+        type: boolean
+        default: false
+      build_target:
+        description: 'Device/kernel group passed to the build workflow'
+        required: true
+        type: choice
+        options:
+          - A14+15+16
+          - A15+16
+          - A14+15
+          - A16
+          - A15
+          - A14
+          - android16-6.12
+          - android15-6.6
+          - android14-6.1
+          - android13-5.15
+          - android12-5.10
+        default: A14+15+16
+      make_release:
+        description: 'Create a release in the optional follow-up build'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge upstream/main into fork/main
+    if: ${{ github.repository != 'WildKernels/OnePlus_KernelSU_SUSFS' }}
+    runs-on: ubuntu-latest
+    outputs:
+      updated: ${{ steps.sync.outputs.updated }}
+      before: ${{ steps.sync.outputs.before }}
+      after: ${{ steps.sync.outputs.after }}
+    steps:
+      - name: Checkout fork main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Merge and upload upstream changes
+        id: sync
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/WildKernels/OnePlus_KernelSU_SUSFS.git
+          git fetch --no-tags upstream main
+
+          before=$(git rev-parse HEAD)
+          echo "before=$before" >> "$GITHUB_OUTPUT"
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "updated=false" >> "$GITHUB_OUTPUT"
+            echo "after=$before" >> "$GITHUB_OUTPUT"
+            echo "Fork is already up to date."
+            exit 0
+          fi
+
+          if ! git merge --no-edit upstream/main; then
+            echo "::error::Upstream changes conflict with the ReSukiSU compatibility layer. Run Sync-Upstream.cmd locally to resolve them."
+            git status --short
+            exit 1
+          fi
+
+          after=$(git rev-parse HEAD)
+          git push origin HEAD:main
+
+          echo "updated=true" >> "$GITHUB_OUTPUT"
+          echo "after=$after" >> "$GITHUB_OUTPUT"
+          echo "Uploaded upstream changes to $GITHUB_REPOSITORY@main."
+
+      - name: Sync summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          {
+            echo "## Upstream sync"
+            echo ""
+            echo "- Repository: \`${GITHUB_REPOSITORY}\`"
+            echo "- Source: \`WildKernels/OnePlus_KernelSU_SUSFS@main\`"
+            echo "- Updated: \`${{ steps.sync.outputs.updated || 'unknown' }}\`"
+            echo "- Before: \`${{ steps.sync.outputs.before || 'unknown' }}\`"
+            echo "- After: \`${{ steps.sync.outputs.after || 'unknown' }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Start optional ReSukiSU build
+        if: ${{ success() && inputs.run_build }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh workflow run build-kernel-release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            --field op_model='${{ inputs.build_target }}' \
+            --field ksu_options='[{"type":"rsu","hash":"main"}]' \
+            --field make_release='${{ inputs.make_release }}'
+
+          echo "ReSukiSU build workflow dispatched."
