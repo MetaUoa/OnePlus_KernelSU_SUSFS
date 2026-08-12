@@ -68,12 +68,21 @@ runs:
         git fetch --tags --force
         
         if ! git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
-          echo "Tag '$TAG_NAME' not found. Creating backdated release..."
+          echo "Tag '$TAG_NAME' not found. Creating backdated tag..."
           GIT_COMMITTER_DATE="2015-01-01T12:00:00" git tag -a "$TAG_NAME" -m "General Cache Storage"
-          if git push origin "$TAG_NAME" --force; then
-            gh release create "$TAG_NAME" --title "General Cache" --notes "Automated storage for build assets" --repo "$TARGET_REPO" || true
-          else
+          if ! git push origin "$TAG_NAME" --force; then
             echo "Push failed, tag might have been created by a parallel job. Continuing..."
+          fi
+        else
+          echo "Tag '$TAG_NAME' already exists."
+        fi
+
+        # Forks inherit Git tags but not GitHub Releases. Check the release
+        # independently and tolerate another matrix job creating it first.
+        if ! gh release view "$TAG_NAME" --repo "$TARGET_REPO" >/dev/null 2>&1; then
+          echo "Release '$TAG_NAME' not found. Creating..."
+          if ! gh release create "$TAG_NAME" --title "General Cache" --notes "Automated storage for build assets" --repo "$TARGET_REPO"; then
+            gh release view "$TAG_NAME" --repo "$TARGET_REPO" >/dev/null
           fi
         else
           echo "Release '$TAG_NAME' already exists. Ready for upload."
