@@ -1,4 +1,4 @@
-name: 'Build OnePlus Kernel with KernelSU Next'
+name: 'Build OnePlus Kernel with KernelSU'
 
 inputs:
   op_config_json:
@@ -12,6 +12,7 @@ inputs:
     options:
       - KSUN
       - KSU
+      - RSU
   ksu_branch_or_hash:
     description: 'KSU branch or commit hash (empty = auto-detect by ksu_type)'
     required: false
@@ -146,6 +147,7 @@ runs:
         ntsync="$OP_NTSYNC"
         blacklist_modules="$OP_BLACKLIST_MODULES"
         optimize='${{ inputs.optimize_level }}'
+        ksu_type='${{ inputs.ksu_type }}'
         
         errors=()
         
@@ -300,6 +302,11 @@ runs:
         case "$optimize" in
           O2|O3) ;;
           *) errors+=("optimize_level must be O2 or O3. Got: '$optimize'"); ;;
+        esac
+
+        case "$ksu_type" in
+          KSUN|KSU|RSU) ;;
+          *) errors+=("ksu_type must be KSUN, KSU or RSU. Got: '$ksu_type'"); ;;
         esac
         
         if [ ${#errors[@]} -ne 0 ]; then
@@ -987,6 +994,53 @@ runs:
         echo "✅ KernelSU added (commit: ${KSU_COMMIT_SHA:0:8})"
         echo "::endgroup::"
 
+    - name: Add ReSukiSU
+      shell: bash
+      if: ${{ inputs.ksu_type == 'RSU' }}
+      run: |
+        set -euo pipefail
+        echo "::group::Add ReSukiSU"
+        cd "$KERNEL_PLATFORM_FOLDER"
+        echo "Adding ReSukiSU..."
+        KSU_INPUT="${{ inputs.ksu_branch_or_hash }}"
+        if [ -z "$KSU_INPUT" ]; then
+          curl --fail --location --proto '=https' -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -
+        else
+          curl --fail --location --proto '=https' -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s "$KSU_INPUT"
+        fi
+        git submodule update --init --recursive
+        cd KernelSU
+
+        COMMITS_COUNT=$(/usr/bin/git rev-list --count HEAD)
+        VERSION_OFFSET=$(sed -n 's/^KSU_VERSION := $(shell expr \(.*\))$/\1/p' kernel/Kbuild \
+          | grep -oE '[0-9]+' | awk '{ sum += $1 } END { print sum }' || true)
+        VERSION_OFFSET=${VERSION_OFFSET:-30700}
+        KSU_VERSION=$((COMMITS_COUNT + VERSION_OFFSET))
+
+        KSU_COMMIT_SHA=$(/usr/bin/git rev-parse HEAD)
+        echo "KSU_COMMIT_SHA=$KSU_COMMIT_SHA" >> "$GITHUB_ENV"
+        echo "NEED_HOOKS=false" >> "$GITHUB_ENV"
+
+        echo "Add ReSukiSU Configuration Settings"
+        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
+        CONFIG_KSU=y
+        CONFIG_KALLSYMS=y
+        CONFIG_KALLSYMS_ALL=y
+        EOF
+
+        if [ "${{ env.OP_SUSFS }}" = true ]; then
+          echo "CONFIG_KSU_SUSFS=y" >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
+        else
+          echo "CONFIG_KSU_TRACEPOINT_HOOK=y" >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
+        fi
+
+        echo "RSU" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
+        echo "$KSU_VERSION" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
+        echo "KSUVER=$KSU_VERSION" >> "$GITHUB_ENV"
+        echo "ReSukiSU Version: $KSU_VERSION"
+        echo "✅ ReSukiSU added (commit: ${KSU_COMMIT_SHA:0:8})"
+        echo "::endgroup::"
+
     - name: Apply SUSFS Patches
       shell: bash
       if: ${{ env.OP_SUSFS == 'true' }}
@@ -1008,13 +1062,22 @@ runs:
           [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$1" ]
         }
         
-        if version_lte "${susfs_version:1}" "1.5.12"; then
+        if [ "${{ inputs.ksu_type }}" = "RSU" ]; then
+          # ReSukiSU uses its own SUSFS inline hook and must not receive the
+          # KernelSU-Next manual-hook patch.
+          echo "NEED_HOOKS=false" >> $GITHUB_ENV
+        elif version_lte "${susfs_version:1}" "1.5.12"; then
           echo "NEED_HOOKS=true" >> $GITHUB_ENV
         else
           echo "NEED_HOOKS=false" >> $GITHUB_ENV
         fi
         
-        case "$susfs_version" in
+        if [ "${{ inputs.ksu_type }}" = "RSU" ]; then
+          # ReSukiSU already contains the matching KSU-side SUSFS integration.
+          # Only the kernel-side SUSFS files and patch below are required.
+          echo "Using ReSukiSU built-in SUSFS integration"
+        else
+          case "$susfs_version" in
           "v1.5.8")
             if [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
               patch -p1 --forward --fuzz=3 < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
@@ -1112,7 +1175,8 @@ runs:
             echo "::error::Unsupported SUSFS version: $susfs_version"
             exit 1
             ;;
-        esac
+          esac
+        fi
         
         cd "$COMMON_KERNEL_FOLDER"
         if [ "${{ env.ANDROID_VER }}" = "android15" ] && [ "${{ env.KERNEL_VER }}" = "6.6" ]; then
@@ -2296,6 +2360,9 @@ runs:
           if [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
             echo "KSUN Version: ${KSUVER:-unknown}"
             echo "KSUN commit SHA: ${KSU_SHA:-unknown}"
+          elif [ "${{ inputs.ksu_type }}" = "RSU" ]; then
+            echo "ReSukiSU Version: ${KSUVER:-unknown}"
+            echo "ReSukiSU commit SHA: ${KSU_SHA:-unknown}"
           else
             echo "KSU Version: ${KSUVER:-unknown}"
             echo "KSU commit SHA: ${KSU_SHA:-unknown}"
@@ -2346,6 +2413,8 @@ runs:
           echo "| **Build Host** | ${{ env.BUILD_HOST }} |"
           if [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
             echo "| **KSUN Version** | ${KSUVER:-unknown} |"
+          elif [ "${{ inputs.ksu_type }}" = "RSU" ]; then
+            echo "| **ReSukiSU Version** | ${KSUVER:-unknown} |"
           else
             echo "| **KSU Version** | ${KSUVER:-unknown} |"
           fi
@@ -2353,11 +2422,13 @@ runs:
           if [ "$KSU_SHA" != "unknown" ]; then
             if [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
               echo "| **KSUN Commit** | [\`${KSU_SHA:0:8}\`](https://github.com/KernelSU-Next/KernelSU-Next/commit/$KSU_SHA) |"
+            elif [ "${{ inputs.ksu_type }}" = "RSU" ]; then
+              echo "| **ReSukiSU Commit** | [\`${KSU_SHA:0:8}\`](https://github.com/ReSukiSU/ReSukiSU/commit/$KSU_SHA) |"
             else
               echo "| **KSU Commit** | [\`${KSU_SHA:0:8}\`](https://github.com/tiann/KernelSU/commit/$KSU_SHA) |"
             fi
           else
-            echo "| **KSU Commit** | unknown |"
+            echo "| **${{ inputs.ksu_type }} Commit** | unknown |"
           fi
           
           if [ "${{ env.OP_SUSFS }}" = true ]; then

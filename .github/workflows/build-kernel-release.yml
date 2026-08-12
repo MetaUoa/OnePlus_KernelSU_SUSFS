@@ -30,7 +30,7 @@ on:
           - android12-5.10
         default: A14+15+16
       ksu_options:
-        description: 'Enter KernelSU build json'
+        description: 'Enter KernelSU build JSON (types: KSUN, KSU, RSU)'
         required: true
         type: string
         default: '[{"type":"ksun","hash":"dev"}]'
@@ -114,7 +114,15 @@ jobs:
           
           input="${{ github.event.inputs.op_model }}"
           ksu_options_raw='${{ github.event.inputs.ksu_options }}'
-          if ! ksu_options_normalized=$(echo "$ksu_options_raw" | jq -c 'map(if .type then .type |= ascii_upcase | if .hash == null then if .type == "KSUN" then .hash = "dev" elif .type == "KSU" then .hash = "main" else .hash end else . end else error("No type found") end)' 2>&1); then
+          if ! ksu_options_normalized=$(echo "$ksu_options_raw" | jq -c '
+            if type != "array" or length == 0 then error("Expected a non-empty array") else . end |
+            map(
+              if .type then .type |= ascii_upcase else error("No type found") end |
+              if .type != "KSUN" and .type != "KSU" and .type != "RSU" then error("Unsupported type: \(.type)") else . end |
+              if .hash == null or .hash == "" then
+                .hash = (if .type == "KSUN" then "dev" else "main" end)
+              else . end
+            )' 2>&1); then
             echo "::error::ksu_options validation failed: $ksu_options_normalized"
             exit 1
           fi
@@ -189,38 +197,7 @@ jobs:
           fi
           
           echo "$filtered" | jq '.' > matrix.json
-          echo "$ksu_options_normalized" > ksu_temp.json
-          
-          # For each device + each ksu option → one combined entry
-          merged_matrix=$(jq -n \
-            --slurpfile devices matrix.json \
-            --slurpfile ksu_list ksu_temp.json \
-            '[ $devices[0][] as $dev | $ksu_list[0][] as $ksu | ($dev + {ksu_type: $ksu.type, ksu_hash: $ksu.hash}) ]')
-          
-          rm ksu_temp.json
-          final_count=$(echo "$merged_matrix" | jq 'length')
-          
-          echo "✅ Found $final_count device(s) to build"
-          echo ""
-          echo "Selected devices:"
-          jq -r '.[] | "  - \(.model) (\(.os_version), \(.android_version)-\(.kernel_version), \(.ksu_type) - \(.ksu_hash))"' <<<"$merged_matrix"
-          
-          echo "count=$count" >> "$GITHUB_OUTPUT"
-          
-          ksu_type=$(echo "$ksu_options_normalized" | jq -r '.[0].type')
-          ksu_ref=$(echo "$ksu_options_normalized" | jq -r '.[0].hash')
-          
-          if [ "$ksu_type" == "KSUN" ]; then
-            KSU_REPO_OWNER="KernelSU-Next"
-            KSU_REPO_NAME="KernelSU-Next"
-          else
-            KSU_REPO_OWNER="tiann"
-            KSU_REPO_NAME="KernelSU"
-          fi
-          
-          HEAD_REF="refs/heads/${ksu_ref}"
-          TAG_REF="refs/tags/${ksu_ref}"
-          
+
           QUERY='query($owner: String!, $name: String!, $headRef: String!, $tagRef: String!, $objRef: String!) {
             repository(owner: $owner, name: $name) {
               hb: ref(qualifiedName: $headRef) { t: target { ... on Commit { o: oid } } }
@@ -228,44 +205,80 @@ jobs:
               ho: object(expression: $objRef) { ... on Commit { o: oid } }
             }
           }'
-          
-          MAX_RETRIES=3
-          RETRY_COUNT=0
+
           RETRY_DELAY=5 # Seconds to wait between retries
-          
-          echo "Resolving $ksu_type hash ($ksu_ref)..."
-          
-          until [ $RETRY_COUNT -ge $MAX_RETRIES ]; do
-            RESULT=$(gh api graphql -f query="$QUERY" -f owner="$KSU_REPO_OWNER" -f name="$KSU_REPO_NAME" -f headRef="$HEAD_REF" -f tagRef="$TAG_REF" -f objRef="$ksu_ref" 2>/dev/null)
-            EXIT_CODE=$?
-            
-            if [ $EXIT_CODE -eq 0 ] && [ ! -z "$RESULT" ]; then
-              echo "  ✅ API Success"
-              break
+
+          # Resolve every requested backend independently. This keeps mixed
+          # matrices reproducible and prevents a SHA from one fork being used
+          # to check out a different fork.
+          resolved_ksu_options='[]'
+          mapfile -t ksu_entries < <(jq -c '.[]' <<<"$ksu_options_normalized")
+          for ksu_entry in "${ksu_entries[@]}"; do
+            ksu_type=$(jq -r '.type' <<<"$ksu_entry")
+            ksu_ref=$(jq -r '.hash' <<<"$ksu_entry")
+
+            case "$ksu_type" in
+              KSUN) KSU_REPO_OWNER="KernelSU-Next"; KSU_REPO_NAME="KernelSU-Next" ;;
+              KSU)  KSU_REPO_OWNER="tiann";         KSU_REPO_NAME="KernelSU" ;;
+              RSU)  KSU_REPO_OWNER="ReSukiSU";      KSU_REPO_NAME="ReSukiSU" ;;
+            esac
+
+            HEAD_REF="refs/heads/${ksu_ref}"
+            TAG_REF="refs/tags/${ksu_ref}"
+            MAX_RETRIES=3
+            RETRY_COUNT=0
+            RESULT=""
+
+            echo "Resolving $ksu_type hash ($ksu_ref)..."
+            until [ $RETRY_COUNT -ge $MAX_RETRIES ]; do
+              if RESULT=$(gh api graphql -f query="$QUERY" -f owner="$KSU_REPO_OWNER" -f name="$KSU_REPO_NAME" -f headRef="$HEAD_REF" -f tagRef="$TAG_REF" -f objRef="$ksu_ref" 2>/dev/null) && [ -n "$RESULT" ]; then
+                echo "  ✅ API Success"
+                break
+              fi
+
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              echo "::warning::API failed (Attempt $RETRY_COUNT/$MAX_RETRIES). Retrying in ${RETRY_DELAY}s..."
+              sleep $RETRY_DELAY
+            done
+
+            if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+              echo "::error::GitHub API unreachable. Cannot validate $ksu_type/$ksu_ref"
+              exit 1
             fi
-            
-            RETRY_COUNT=$((RETRY_COUNT + 1))
-            echo "::warning::API failed (Attempt $RETRY_COUNT/$MAX_RETRIES). Retrying in ${RETRY_DELAY}s..."
-            sleep $RETRY_DELAY
+
+            resolved_sha=$(jq -r '.data.repository | (.hb.t.o // .ht.t.o // .ho.o // "unknown")' <<<"$RESULT")
+            if [ "$resolved_sha" == "unknown" ]; then
+              echo "::error::Ref/Hash '$ksu_ref' does not exist in $KSU_REPO_OWNER/$KSU_REPO_NAME"
+              exit 1
+            fi
+
+            echo "  ✅ Resolved: $ksu_type/$ksu_ref → $resolved_sha"
+            resolved_ksu_options=$(jq -c \
+              --arg type "$ksu_type" \
+              --arg hash "$ksu_ref" \
+              --arg resolved_hash "$resolved_sha" \
+              '. + [{type: $type, hash: $hash, resolved_hash: $resolved_hash}]' \
+              <<<"$resolved_ksu_options")
           done
-          
-          if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-            echo "::error::GitHub API unreachable. Cannot validate $ksu_ref"
-            exit 1
-          fi
-          
-          resolved_sha=$(echo "$RESULT" | jq -r '.data.repository | (.hb.t.o // .ht.t.o // .ho.o // "unknown")')
-          
-          if [ "$resolved_sha" == "unknown" ]; then
-            echo "::error::Ref/Hash '$ksu_ref' does not exist in $KSU_REPO_OWNER/$KSU_REPO_NAME"
-            exit 1
-          fi
-          
-          echo "  ✅ Resolved: $ksu_type/$ksu_ref → $resolved_sha"
-          echo "ksu_resolved_hash=$resolved_sha" >> "$GITHUB_OUTPUT"
-          
-          # Inject ksu_resolved_hash into each device in the matrix
-          merged_matrix=$(echo "$merged_matrix" | jq  --arg resolved_sha "$resolved_sha" 'map(.ksu_resolved_hash = $resolved_sha)')
+
+          # Retain the first resolved SHA as a compatibility output for the
+          # single-backend release-note path.
+          first_resolved_sha=$(jq -r '.[0].resolved_hash' <<<"$resolved_ksu_options")
+          echo "ksu_resolved_hash=$first_resolved_sha" >> "$GITHUB_OUTPUT"
+
+          # For each device + each KSU option → one fully pinned build entry.
+          merged_matrix=$(jq -n \
+            --slurpfile devices matrix.json \
+            --argjson ksu_list "$resolved_ksu_options" \
+            '[ $devices[0][] as $dev | $ksu_list[] as $ksu |
+               ($dev + {ksu_type: $ksu.type, ksu_hash: $ksu.hash, ksu_resolved_hash: $ksu.resolved_hash}) ]')
+
+          final_count=$(jq 'length' <<<"$merged_matrix")
+          echo "✅ Found $final_count build(s)"
+          echo ""
+          echo "Selected builds:"
+          jq -r '.[] | "  - \(.model) (\(.os_version), \(.android_version)-\(.kernel_version), \(.ksu_type) - \(.ksu_hash) @ \(.ksu_resolved_hash[0:8]))"' <<<"$merged_matrix"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
           
           # SUSFS hash fetch
           SUSFS_REPO="https://gitlab.com/simonpunk/susfs4ksu.git"
@@ -450,7 +463,7 @@ jobs:
           ksu_ref="${{ fromJSON(steps.set-matrix.outputs.ksu_options_normalized)[0].hash }}"
           
           ksu_display=""
-          if [ "$ksu_type" = "KSUN" ] || [ "$ksu_type" = "KSU" ]; then
+          if [ "$ksu_type" = "KSUN" ] || [ "$ksu_type" = "KSU" ] || [ "$ksu_type" = "RSU" ]; then
             if [[ "$ksu_ref" =~ ^[0-9a-f]{40}$ ]]; then
               ksu_display+="📌 \`$ksu_type\`, \`$ksu_ref\`"
             else
@@ -590,8 +603,9 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.set-op-model.outputs.matrix) }}
     outputs:
-      ksun_ver: ${{ steps.build-stat.outputs.ksu_version }}
-      ksu_ver: ${{ steps.build-stat.outputs.ksu_version }}
+      ksun_ver: ${{ steps.build-stat.outputs.ksun_ver }}
+      ksu_ver: ${{ steps.build-stat.outputs.ksu_ver }}
+      rsu_ver: ${{ steps.build-stat.outputs.rsu_ver }}
     steps:
       - name: 📥 Checkout Code
         uses: actions/checkout@v6
@@ -728,10 +742,17 @@ jobs:
               echo "  - KSU Next: v${{ steps.build.outputs.ksu_version }}"
               echo "ksun_ver=${{ steps.build.outputs.ksu_version }}" >> "$GITHUB_OUTPUT"
               echo "ksu_ver=" >> "$GITHUB_OUTPUT"
-            else
+              echo "rsu_ver=" >> "$GITHUB_OUTPUT"
+            elif [ "${{ matrix.ksu_type }}" = "KSU" ]; then
               echo "  - KSU: v${{ steps.build.outputs.ksu_version }}"
               echo "ksun_ver=" >> "$GITHUB_OUTPUT"
               echo "ksu_ver=${{ steps.build.outputs.ksu_version }}" >> "$GITHUB_OUTPUT"
+              echo "rsu_ver=" >> "$GITHUB_OUTPUT"
+            else
+              echo "  - ReSukiSU: v${{ steps.build.outputs.ksu_version }}"
+              echo "ksun_ver=" >> "$GITHUB_OUTPUT"
+              echo "ksu_ver=" >> "$GITHUB_OUTPUT"
+              echo "rsu_ver=${{ steps.build.outputs.ksu_version }}" >> "$GITHUB_OUTPUT"
             fi
             if [ "${{ matrix.susfs }}" = true ]; then
               echo "  - SUSFS: ${{ steps.build.outputs.susfs_version }}"
@@ -780,9 +801,13 @@ jobs:
               cat >> $GITHUB_STEP_SUMMARY << EOF
           | **KSU Next** | v${{ steps.build.outputs.ksu_version }} |
           EOF
-            else
+            elif [ "${{ matrix.ksu_type }}" = "KSU" ]; then
               cat >> $GITHUB_STEP_SUMMARY << EOF
           | **KSU** | v${{ steps.build.outputs.ksu_version }} |
+          EOF
+            else
+              cat >> $GITHUB_STEP_SUMMARY << EOF
+          | **ReSukiSU** | v${{ steps.build.outputs.ksu_version }} |
           EOF
             fi
             
@@ -1067,6 +1092,11 @@ jobs:
           | **KernelSU Branch** | \`$ksu_display\` |
           | **KernelSU Version** | \`$ksu_ver_global\` |
           EOF
+          elif [ "$ksu_type" == "RSU" ]; then
+            cat << EOF >> release_notes.md
+          | **ReSukiSU Branch** | \`$ksu_display\` |
+          | **ReSukiSU Version** | \`$ksu_ver_global\` |
+          EOF
           else
             cat << EOF >> release_notes.md
           | **Unknown KernelSU Fork Branch** | \`\` |
@@ -1100,6 +1130,10 @@ jobs:
           elif [ "$ksu_type" == "KSU" ]; then
             cat << EOF >> release_notes.md
           - **KernelSU** - Kernel-level root solution
+          EOF
+          elif [ "$ksu_type" == "RSU" ]; then
+            cat << EOF >> release_notes.md
+          - **ReSukiSU** - SukiSU-based kernel-level root solution with built-in SUSFS integration
           EOF
           fi
           cat << EOF >> release_notes.md
@@ -1164,6 +1198,11 @@ jobs:
           - **KernelSU Manager**  
             → [GitHub Release](https://github.com/tiann/KernelSU/releases)
           EOF
+          elif [ "$ksu_type" == "RSU" ]; then
+            cat << EOF >> release_notes.md
+          - **ReSukiSU Manager**
+            → [Official installation guide](https://resukisu.github.io/guide/install.html)
+          EOF
           fi
           cat << EOF >> release_notes.md
           ### Community Managers
@@ -1195,8 +1234,8 @@ jobs:
               c. **KSU GKI**: if you are 100% sure you already flashed stock init_boot/boot/vendor_boot, no action is needed; otherwise, follow the same steps as KSU LKM.
               d. **APatch**: remove /data/adb contents to avoid leftover root conflicts **after flashing the AnyKernel3 ZIP**.
           3. Flash the ZIP to the active slot using Kernel Flasher.
-          4. Install the KernelSU-Next Manager APK, same version as mentioned in the AnyKernel3 ZIP name.
-          5. Open the KernelSU-Next app.
+          4. Install the manager matching the KSU backend listed above.
+          5. Open the selected manager app and verify that the kernel is detected.
           6. Reboot the device if you performed any cleanup in step 2.
           
           ---

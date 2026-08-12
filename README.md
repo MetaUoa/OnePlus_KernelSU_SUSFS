@@ -4,6 +4,7 @@
 
 [![KernelSU-Next](https://img.shields.io/badge/KernelSU_Next-Supported-green)](https://kernelsu-next.github.io/webpage/)
 [![KernelSU](https://img.shields.io/badge/KernelSU-Supported-green)](https://kernelsu.org/)
+[![ReSukiSU](https://img.shields.io/badge/ReSukiSU-Supported-green)](https://github.com/ReSukiSU/ReSukiSU)
 [![Wild KSU](https://img.shields.io/badge/Wild_KSU-Not%20Supported-cb2431)](https://github.com/WildKernels/Wild_KSU/)
 [![SUSFS](https://img.shields.io/badge/SUSFS-Integrated-orange?logo=gitlab)](https://gitlab.com/simonpunk/susfs4ksu)
 [![OnePlusOSS Tracking Status](https://img.shields.io/badge/OnePlusOSS--Tracker-active-green)](https://github.com/WildKernels/OnePlus_KernelSU_SUSFS/blob/status-page/README.md)
@@ -67,7 +68,7 @@ Flashing this kernel will not void your warranty, but there is always a risk of 
 
 ## ✨ Features
 
-- 🔐 **KernelSU / KernelSU-Next**: A root solution for Android GKI devices that works in kernel mode and grants root permission to userspace applications directly in kernel space
+- 🔐 **KernelSU / KernelSU-Next / ReSukiSU**: Selectable kernel-mode root backends for Android GKI devices
 - 🔥 **WildKSU Manager Support**: Support for the Root Manager developed by our team with lots of customisations
 - 🥷 **SUSFS**: An addon root hiding kernel patches and userspace module for KernelSU
 - 🛡️ **BBG**: LSM-based Baseband Guard security to protect critical device partitions. abl/efisp can be added to whitelist for efisp exploit devices.
@@ -88,6 +89,27 @@ Flashing this kernel will not void your warranty, but there is always a risk of 
 
 ## 📋 Installation Instructions
 
+### Build with ReSukiSU
+
+Run **Build and Release OnePlus Kernels** from GitHub Actions and set `ksu_options` to:
+
+```json
+[{"type":"rsu","hash":"main"}]
+```
+
+`hash` accepts a ReSukiSU branch, tag, or full commit SHA. The workflow resolves it to an immutable commit before building, so `main` follows new ReSukiSU changes while a SHA gives a reproducible build. ReSukiSU's KSU-side SUSFS integration is retained; this project continues to apply the kernel-side SUSFS and OnePlus feature patches.
+
+To keep a fork current with this project's new features, keep the compatibility change as a small commit on top of upstream and regularly rebase it:
+
+```bash
+git remote add upstream https://github.com/WildKernels/OnePlus_KernelSU_SUSFS.git
+git fetch upstream
+git rebase upstream/main
+git push --force-with-lease origin main
+```
+
+Resolve conflicts only in `.github/actions/build-kernel/action.yml`, `.github/workflows/build-kernel-release.yml`, and this documentation; device configs and manifests remain upstream-owned.
+
 For GKI installation, please follow the official guide:
 
 📖 **[KernelSU Installation Guide](https://kernelsu.org/guide/installation.html)**
@@ -107,6 +129,7 @@ You can also find Installation instructions in the release notes.
 |:---------------:|:----------------:|:-----------:|
 | **KernelSU** | tiann | [![GitHub](https://img.shields.io/badge/GitHub-tiann-blue?style=flat-square&logo=github)](https://github.com/tiann/KernelSU) |
 | **KernelSU-Next** | rifsxd | [![GitHub](https://img.shields.io/badge/GitHub-rifsxd-blue?style=flat-square&logo=github)](https://github.com/KernelSU-Next/KernelSU-Next) |
+| **ReSukiSU** | ReSukiSU Development | [![GitHub](https://img.shields.io/badge/GitHub-ReSukiSU-blue?style=flat-square&logo=github)](https://github.com/ReSukiSU/ReSukiSU) |
 | **Magic-KSU** | 5ec1cff | [![GitHub](https://img.shields.io/badge/GitHub-5ec1cff-blue?style=flat-square&logo=github)](https://github.com/5ec1cff/KernelSU) |
 | **SUSFS** | simonpunk | [![GitLab](https://img.shields.io/badge/GitLab-simonpunk-orange?style=flat-square&logo=gitlab)](https://gitlab.com/simonpunk/susfs4ksu.git) |
 | **SUSFS Module** | sidex15 | [![GitHub](https://img.shields.io/badge/GitHub-sidex15-blue?style=flat-square&logo=github)](https://github.com/sidex15) |
